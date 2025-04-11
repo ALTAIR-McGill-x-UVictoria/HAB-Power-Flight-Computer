@@ -1,0 +1,90 @@
+Code Teensy (C++)
+
+
+// Dual Thermistor Heating Controller for Battery Pack + Electronics
+// Uses 2 NTC sensors, 1 heating pad, Teensy 3.x/4.x
+// Pin Definitions
+const int ntc1Pin = A0;        // Thermistor 1 (Battery Pack)
+const int ntc2Pin = A1;        // Thermistor 2 (Electronics)
+const int heatPadPin = 5;      // MOSFET gate controlling heat pad (LOW-side switching)
+ADC::setReference(ADC_REFERENCE::REF_5V);  // Set 5V as reference
+// Electrical setup
+const float seriesResistor = 10000.0;  // Series resistor (matches your divider setup)
+// Temperature Thresholds
+const float criticalTemp = 10.0;  // Start heating if either thermistor drops below this (°C)
+const float safeTemp = 25.0;      // Stop heating when both thermistors are above this (°C)
+const float abortTemp = 0.0;     // ABORT if after max heating we are still this cold
+// Safety Timer (max heating duration)
+const unsigned long maxHeatingDuration = 8 * 60 * 1000;  // 8 minutes in milliseconds
+// State variables
+bool heatOn = false;             // Tracks heating status
+unsigned long heatingStartTime = 0;  // When heating was started
+void setup() {
+    Serial.begin(9600);            // For telemetry/logging
+    pinMode(heatPadPin, OUTPUT);
+    digitalWrite(heatPadPin, LOW);  // Heater off initially
+}
+void loop() {
+    // Read both thermistors
+    float temp1 = readTemperature(ntc1Pin);
+    float temp2 = readTemperature(ntc2Pin);
+    // Heating Control Logic
+    if (temp1 < criticalTemp || temp2 < criticalTemp) {
+        heatOn = true;
+        heatingStartTime = millis();
+    }
+    if (heatOn) {
+        // Check if max heating time exceeded
+        if (millis() - heatingStartTime >= maxHeatingDuration) {
+            heatOn = false;
+            // If after heating we are still too cold, send ABORT
+            if (temp1 < abortTemp && temp2 < abortTemp) {
+                sendAbortSignal();
+            }
+        } 
+        // Turn off heating if both are warm enough
+        else if (temp1 > safeTemp && temp2 > safeTemp) {
+            heatOn = false;
+        }
+    }
+    // Actually switch heater based on heatOn flag
+    digitalWrite(heatPadPin, heatOn ? HIGH : LOW);
+    // Send telemetry every 30 seconds (adjust if needed)
+    static unsigned long lastTelemetry = 0;
+    if (millis() - lastTelemetry >= 30000) {
+        sendTelemetry(temp1, temp2, heatOn);
+        lastTelemetry = millis();
+    }
+    delay(1000);  // Basic loop rate (adjust as needed)
+}
+// Read a single thermistor and return temperature (°C)
+float readTemperature(int ntcPin) {
+    int adcVal = analogRead(ntcPin);  // Read ADC value from thermistor
+    float resistance = seriesResistor * (1023.0 / adcVal - 1.0);  // Calculate resistance from ADC
+    return steinhartHart(resistance);  // Calculate and return temperature
+}
+// Simplified Steinhart-Hart equation to compute temperature from resistance
+float steinhartHart(float resistance) {
+    const float R_0 = 10000.0;  // Resistance at 25°C in Ohms
+    const float B = 3435.0;     // B constant (25/85) in Kelvin
+    const float T_0 = 298.15;   // Temperature at 25°C in Kelvin (25°C = 298.15 K)
+    // Calculate temperature in Kelvin using the simplified Steinhart-Hart equation
+    float logR = log(resistance / R_0);  // ln(R/R_0)
+    float invT = 1.0 / T_0 + (1.0 / B) * logR;  // 1/T = 1/T_0 + (1/B) * ln(R/R_0)
+    float tempK = 1.0 / invT;  // Temperature in Kelvin
+    return tempK - 273.15;     // Convert temperature to Celsius
+}
+// Send temperatures, heating status via serial (can replace with actual telemetry system)
+void sendTelemetry(float t1, float t2, bool heating) {
+    Serial.print("TEMP1: ");
+    Serial.print(t1);
+    Serial.print(" °C, TEMP2: ");
+    Serial.print(t2);
+    Serial.print(" °C, Heating: ");
+    Serial.println(heating ? "ON" : "OFF");
+}
+// ABORT signal — send a special message to indicate critical thermal failure
+void sendAbortSignal() {
+    Serial.println("ABORT: TEMPERATURE TOO LOW AFTER MAX HEATING");
+    // Optional: Add other telemetry calls like a status flag or trigger a beacon mode
+}
